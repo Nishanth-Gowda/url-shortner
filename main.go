@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"log"
 	"math/rand"
 	"net/url"
 	"time"
@@ -22,13 +23,15 @@ type Response events.APIGatewayProxyResponse
 func init() {
 	cfg, err := config.LoadDefaultConfig(context.TODO())
 	if err != nil {
-		panic(err)
+		log.Fatalf("Error loading AWS configuration: %v", err)
 	}
 
 	db = dynamodb.NewFromConfig(cfg)
 }
 
 func Handler(ctx context.Context, request events.APIGatewayProxyRequest) (Response, error) {
+	log.Printf("Received request: %s %s", request.HTTPMethod, request.Path)
+
 	switch request.HTTPMethod {
 	case "POST":
 		return shortenURL(ctx, request)
@@ -40,8 +43,11 @@ func Handler(ctx context.Context, request events.APIGatewayProxyRequest) (Respon
 }
 
 func shortenURL(ctx context.Context, requests events.APIGatewayProxyRequest) (Response, error) {
+	log.Printf("ShortenURL function called")
+
 	u, err := url.Parse(requests.Body)
 	if err != nil {
+		log.Printf("Error parsing URL: %v", err)
 		return invalidRequest()
 	}
 
@@ -57,6 +63,7 @@ func shortenURL(ctx context.Context, requests events.APIGatewayProxyRequest) (Re
 
 	attrValue, err := attributevalue.MarshalMap(item)
 	if err != nil {
+		log.Printf("Error marshaling DynamoDB attribute value: %v", err)
 		return internalError(err)
 	}
 
@@ -66,8 +73,11 @@ func shortenURL(ctx context.Context, requests events.APIGatewayProxyRequest) (Re
 	})
 
 	if err != nil {
+		log.Printf("Error putting item to DynamoDB: %v", err)
 		return internalError(err)
 	}
+
+	log.Printf("URL shortened successfully. Code: %s", code)
 
 	return Response{
 		StatusCode: 200,
@@ -76,6 +86,8 @@ func shortenURL(ctx context.Context, requests events.APIGatewayProxyRequest) (Re
 }
 
 func redirectURL(ctx context.Context, request events.APIGatewayProxyRequest) (Response, error) {
+	log.Printf("RedirectURL function called")
+
 	code := request.PathParameters["code"]
 
 	result, err := db.GetItem(ctx, &dynamodb.GetItemInput{
@@ -86,18 +98,23 @@ func redirectURL(ctx context.Context, request events.APIGatewayProxyRequest) (Re
 	})
 
 	if err != nil {
+		log.Printf("Error getting item from DynamoDB: %v", err)
 		return internalError(err)
 	}
 
 	if result.Item == nil {
+		log.Printf("URL not found for code: %s", code)
 		return NotFound()
 	}
 
 	var url string
 	err = attributevalue.UnmarshalMap(result.Item, &url)
 	if err != nil {
+		log.Printf("Error unmarshaling DynamoDB attribute value: %v", err)
 		return internalError(err)
 	}
+
+	log.Printf("Redirecting to URL: %s", url)
 
 	return Response{
 		StatusCode: 301,
@@ -108,7 +125,8 @@ func redirectURL(ctx context.Context, request events.APIGatewayProxyRequest) (Re
 }
 
 func generateShortUrl() string {
-	// Generate a random short URL
+	log.Printf("Generating short URL")
+
 	const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 	const keyLength = 6
 
@@ -117,12 +135,17 @@ func generateShortUrl() string {
 	for i := range shortkey {
 		shortkey[i] = charset[rand.Intn(len(charset))]
 	}
-	return string(shortkey)
+	code := string(shortkey)
+
+	log.Printf("Generated short URL: %s", code)
+
+	return code
 }
 
 // Helper functions
 
 func internalError(err error) (Response, error) {
+	log.Printf("Internal error: %v", err)
 	return Response{
 		StatusCode: 500,
 		Body:       err.Error(),
@@ -130,6 +153,7 @@ func internalError(err error) (Response, error) {
 }
 
 func NotFound() (Response, error) {
+	log.Printf("Resource not found")
 	return Response{
 		StatusCode: 404,
 		Body:       "Not found",
@@ -137,6 +161,7 @@ func NotFound() (Response, error) {
 }
 
 func unhandledMethod() (Response, error) {
+	log.Printf("Unhandled method")
 	return Response{
 		StatusCode: 405,
 		Body:       "Method not allowed",
@@ -144,6 +169,7 @@ func unhandledMethod() (Response, error) {
 }
 
 func invalidRequest() (Response, error) {
+	log.Printf("Invalid request")
 	return Response{
 		StatusCode: 400,
 		Body:       "Invalid request",
