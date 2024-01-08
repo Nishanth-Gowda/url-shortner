@@ -45,7 +45,7 @@ func Handler(ctx context.Context, request events.APIGatewayProxyRequest) (Respon
 func shortenURL(ctx context.Context, requests events.APIGatewayProxyRequest) (Response, error) {
 	log.Printf("ShortenURL function called")
 
-	u, err := url.Parse(requests.Body)
+	u, err := url.ParseRequestURI(requests.Body)
 	if err != nil {
 		log.Printf("Error parsing URL: %v", err)
 		return invalidRequest()
