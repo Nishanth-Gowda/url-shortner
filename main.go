@@ -1,70 +1,116 @@
 package main
 
 import (
-	"encoding/json"
-	"log"
+	"context"
 	"math/rand"
-	"net/http"
+	"net/url"
 	"time"
-    
-	"github.com/gorilla/mux"
+
+	"github.com/aws/aws-lambda-go/events"
+	"github.com/aws/aws-lambda-go/lambda"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 )
 
-const baseURL = "http://bit.go/"
+var db *dynamodb.Client
 
-var store = make(map[string]string)
+type Response events.APIGatewayProxyResponse
 
-type Response struct {
-	URL string `json:"url"`
+func init() {
+	cfg, err := config.LoadDefaultConfig(context.TODO())
+	if err != nil {
+		panic(err)
+	}
+
+	db = dynamodb.NewFromConfig(cfg)
 }
 
-// Handler for POST /api/shorten request 
-func shortenHandler(w http.ResponseWriter, r *http.Request) {
-
-    // Decode JSON body containing original URL
-    var url map[string]string  
-    json.NewDecoder(r.Body).Decode(&url) 
-
-    // Generate short random URL code
-    shortCode := generateShortUrl()  
-
-    // Construct full shortened URL
-    resUrl := baseURL + shortCode
-
-    // Persist short code & original URL mapping 
-    store[shortCode] = url["url"]
-
-    // Prepare JSON response with shortened URL
-    res := Response{URL: resUrl} 
-    json.NewEncoder(w).Encode(res)
-
+func Handler(ctx context.Context, request events.APIGatewayProxyRequest) (Response, error) {
+	switch request.HTTPMethod {
+	case "POST":
+		return shortenURL(ctx, request)
+	case "GET":
+		return redirectURL(ctx, request)
+	default:
+		return unhandledMethod()
+	}
 }
 
-// Handler for GET /{code} redirect request
-func redirectHandler(w http.ResponseWriter, r *http.Request) {
-   
-    // Extract short code from request URL 
-    vars := mux.Vars(r)    
-    code := vars["code"]
+func shortenURL(ctx context.Context, requests events.APIGatewayProxyRequest) (Response, error) {
+	u, err := url.Parse(requests.Body)
+	if err != nil {
+		return invalidRequest()
+	}
 
-    // Retrieve original URL from store  
-    if url, ok := store[code]; ok {
-      
-        // Redirect client to original URL
-        http.Redirect(w, r, url, http.StatusTemporaryRedirect)
+	code := generateShortUrl()
 
-    } else {
-      
-        // Send 404 if short code not in store
-        http.Error(w, "URL not found", http.StatusNotFound) 
-    }
-    
+	item := struct {
+		Code string `json:"code"`
+		URL  string `json:"url"`
+	}{
+		Code: code,
+		URL:  u.String(),
+	}
+
+	attrValue, err := attributevalue.MarshalMap(item)
+	if err != nil {
+		return internalError(err)
+	}
+
+	_, err = db.PutItem(ctx, &dynamodb.PutItemInput{
+		TableName: aws.String("url-shortener"),
+		Item:      attrValue,
+	})
+
+	if err != nil {
+		return internalError(err)
+	}
+
+	return Response{
+		StatusCode: 200,
+		Body:       code,
+	}, nil
+}
+
+func redirectURL(ctx context.Context, request events.APIGatewayProxyRequest) (Response, error) {
+	code := request.PathParameters["code"]
+
+	result, err := db.GetItem(ctx, &dynamodb.GetItemInput{
+		TableName: aws.String("urlshortener"),
+		Key: map[string]types.AttributeValue{
+			"code": &types.AttributeValueMemberS{Value: code},
+		},
+	})
+
+	if err != nil {
+		return internalError(err)
+	}
+
+	if result.Item == nil {
+		return NotFound()
+	}
+
+	var url string
+	err = attributevalue.UnmarshalMap(result.Item, &url)
+	if err != nil {
+		return internalError(err)
+	}
+
+	return Response{
+		StatusCode: 301,
+		Headers: map[string]string{
+			"Location": url,
+		},
+	}, nil
 }
 
 func generateShortUrl() string {
-    // Generate a random short URL
-    const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-    const keyLength = 6
+	// Generate a random short URL
+	const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	const keyLength = 6
 
 	rand.NewSource(time.Now().UnixNano())
 	shortkey := make([]byte, keyLength)
@@ -74,18 +120,36 @@ func generateShortUrl() string {
 	return string(shortkey)
 }
 
-func main() {
-	
-	// Create Gorilla mux router
-    router := mux.NewRouter()
+// Helper functions
 
-    // Define API and redirect routes
-    router.HandleFunc("/api/shorten", shortenHandler).Methods("POST")
-    router.HandleFunc("/{code}", redirectHandler).Methods("GET")
-
-    // Start HTTP server
-    log.Println("Starting server on :8080")  
-    http.ListenAndServe(":8080", router)
-	
+func internalError(err error) (Response, error) {
+	return Response{
+		StatusCode: 500,
+		Body:       err.Error(),
+	}, nil
 }
 
+func NotFound() (Response, error) {
+	return Response{
+		StatusCode: 404,
+		Body:       "Not found",
+	}, nil
+}
+
+func unhandledMethod() (Response, error) {
+	return Response{
+		StatusCode: 405,
+		Body:       "Method not allowed",
+	}, nil
+}
+
+func invalidRequest() (Response, error) {
+	return Response{
+		StatusCode: 400,
+		Body:       "Invalid request",
+	}, nil
+}
+
+func main() {
+	lambda.Start(Handler)
+}
