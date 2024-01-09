@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"log"
 	"math/rand"
 	"net/url"
@@ -11,14 +12,21 @@ import (
 	"github.com/aws/aws-lambda-go/lambda"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 )
 
 var db *dynamodb.Client
 
 type Response events.APIGatewayProxyResponse
+
+// Define struct to match DynamoDB schema
+type UrlItem struct {
+    Code string `dynamodbav:"Code"`
+    URL string `dynamodbav:"URL"`  
+}
+
 
 func init() {
 	cfg, err := config.LoadDefaultConfig(context.TODO())
@@ -45,20 +53,25 @@ func Handler(ctx context.Context, request events.APIGatewayProxyRequest) (Respon
 func shortenURL(ctx context.Context, requests events.APIGatewayProxyRequest) (Response, error) {
 	log.Printf("ShortenURL function called")
 
-	u, err := url.ParseRequestURI(requests.Body)
-	if err != nil {
-		log.Printf("Error parsing URL: %v", err)
-		return invalidRequest()
-	}
+	var data map[string]string
+    json.Unmarshal([]byte(requests.Body), &data)
+
+    // Extract URL 
+    rawURL := data["url"] 
+
+    parsed, err := url.Parse(rawURL)
+    if err != nil {
+        return invalidRequest()
+    }
 
 	code := generateShortUrl()
 
 	item := struct {
-		Code string `json:"code"`
-		URL  string `json:"url"`
+		Code  string `json:"code"`
+		URL string `json:"url"`
 	}{
 		Code: code,
-		URL:  u.String(),
+		URL: parsed.String(),
 	}
 
 	attrValue, err := attributevalue.MarshalMap(item)
@@ -68,7 +81,7 @@ func shortenURL(ctx context.Context, requests events.APIGatewayProxyRequest) (Re
 	}
 
 	_, err = db.PutItem(ctx, &dynamodb.PutItemInput{
-		TableName: aws.String("url-shortener"),
+		TableName: aws.String("url-shortner"),
 		Item:      attrValue,
 	})
 
@@ -91,9 +104,9 @@ func redirectURL(ctx context.Context, request events.APIGatewayProxyRequest) (Re
 	code := request.PathParameters["code"]
 
 	result, err := db.GetItem(ctx, &dynamodb.GetItemInput{
-		TableName: aws.String("urlshortener"),
+		TableName: aws.String("url-shortner"),
 		Key: map[string]types.AttributeValue{
-			"code": &types.AttributeValueMemberS{Value: code},
+			"Code": &types.AttributeValueMemberS{Value: code},
 		},
 	})
 
@@ -107,19 +120,19 @@ func redirectURL(ctx context.Context, request events.APIGatewayProxyRequest) (Re
 		return NotFound()
 	}
 
-	var url string
-	err = attributevalue.UnmarshalMap(result.Item, &url)
+	var item UrlItem
+    err = attributevalue.UnmarshalMap(result.Item, &item)
 	if err != nil {
 		log.Printf("Error unmarshaling DynamoDB attribute value: %v", err)
 		return internalError(err)
 	}
 
-	log.Printf("Redirecting to URL: %s", url)
+	log.Printf("Redirecting to URL: %s", item.URL)
 
 	return Response{
 		StatusCode: 301,
 		Headers: map[string]string{
-			"Location": url,
+			"Location": item.URL,
 		},
 	}, nil
 }
