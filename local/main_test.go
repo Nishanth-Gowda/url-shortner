@@ -23,10 +23,7 @@ func TestGenerateShortUrl(t *testing.T) {
 
 // Test shortenHandler function
 func TestShortenHandler(t *testing.T) {
-	req, err := http.NewRequest(http.MethodPost, "/api/shorten", strings.NewReader(`{"url": "https://example.com"}`))
-	if err != nil {
-		t.Fatal(err)
-	}
+	req := httptest.NewRequest(http.MethodPost, "/api/shorten", strings.NewReader(`{"url": "https://example.com"}`))
 	rr := httptest.NewRecorder()
 
 	router := mux.NewRouter()
@@ -38,7 +35,7 @@ func TestShortenHandler(t *testing.T) {
 	}
 
 	var res Response
-	err = json.Unmarshal(rr.Body.Bytes(), &res)
+	err := json.Unmarshal(rr.Body.Bytes(), &res)
 	if err != nil {
 		t.Fatal(err)
 	}
